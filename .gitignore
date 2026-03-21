@@ -1,0 +1,30 @@
+# Rust build artifacts
+rust/packet_engine/target/
+
+# Compiled libraries (rebuilt from source via ./scripts/build-universal.sh)
+maven/Frameworks/*.a
+maven/Frameworks/ios-arm64/
+maven/Frameworks/ios-arm64-simulator/
+
+# Generated header (rebuilt from source)
+maven/PacketTunnelExtension/Bridge/packet_engine.h
+
+# Xcode
+*.xcuserdata
+DerivedData/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Node.js (backend)
+node_modules/
+dist/
+
+# Environment
+.env
+.env.local
+
+# Claude
+.claude/
+CLAUDE.md

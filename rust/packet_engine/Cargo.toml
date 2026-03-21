@@ -1,0 +1,22 @@
+[package]
+name = "packet_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+log = "0.4"
+thiserror = "1.0"
+
+[build-dependencies]
+cbindgen = "0.26"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
