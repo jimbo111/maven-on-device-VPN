@@ -31,3 +31,7 @@ CLAUDE.md
 
 # Local task notes
 tasks/
+
+# Plugin-generated audit receipts
+receipts/
+review-receipts/
