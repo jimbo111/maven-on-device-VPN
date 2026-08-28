@@ -126,12 +126,14 @@ fn parse_ipv4(packet: &[u8]) -> Option<IpHeader> {
 const IPV6_EXT_HOP_BY_HOP: u8 = 0;
 const IPV6_EXT_ROUTING: u8 = 43;
 const IPV6_EXT_FRAGMENT: u8 = 44;
-const IPV6_EXT_ESP: u8 = 50;
 const IPV6_EXT_AH: u8 = 51;
 const IPV6_EXT_DESTINATION: u8 = 60;
 
 /// Returns `true` if `next_header` is a recognised IPv6 extension header that
 /// must be skipped to reach the transport-layer payload.
+///
+/// ESP (50) is deliberately absent: everything after an ESP header is
+/// encrypted, so it terminates the walk like a transport protocol.
 #[inline]
 fn is_ipv6_extension_header(next_header: u8) -> bool {
     matches!(
@@ -139,7 +141,6 @@ fn is_ipv6_extension_header(next_header: u8) -> bool {
         IPV6_EXT_HOP_BY_HOP
             | IPV6_EXT_ROUTING
             | IPV6_EXT_FRAGMENT
-            | IPV6_EXT_ESP
             | IPV6_EXT_AH
             | IPV6_EXT_DESTINATION
     )
@@ -186,8 +187,16 @@ fn parse_ipv6(packet: &[u8]) -> Option<IpHeader> {
         // field is reserved and must not be used to compute the size.
         let ext_len_bytes: usize = if next_header == IPV6_EXT_FRAGMENT {
             8
+        } else if next_header == IPV6_EXT_AH {
+            // AH (RFC 4302): payload_len is in 4-byte units minus 2,
+            // unlike every other extension header.
+            if payload_offset + 2 > packet.len() {
+                return None;
+            }
+            let payload_len = packet[payload_offset + 1] as usize;
+            (payload_len + 2) * 4
         } else {
-            // Each non-fragment extension header has:
+            // Each other extension header has:
             //   byte 0: next header
             //   byte 1: hdr_ext_len (length in 8-byte units, not counting the
             //            first 8 bytes)
@@ -407,6 +416,37 @@ mod tests {
         let hdr = parse_ip_header(&pkt).expect("should parse");
         assert_eq!(hdr.payload_offset, 40);
         assert_eq!(hdr.protocol, IpProtocol::Udp);
+    }
+
+    #[test]
+    fn ipv6_esp_terminates_extension_walk() {
+        // next_header=50 (ESP). The payload is encrypted, so the parser must
+        // stop at the ESP header instead of walking into ciphertext.
+        let mut pkt = vec![0u8; 48];
+        pkt[0] = 0x60;
+        pkt[4] = 0x00;
+        pkt[5] = 0x08; // payload length = 8
+        pkt[6] = 50; // ESP
+        let hdr = parse_ip_header(&pkt).expect("should parse");
+        assert_eq!(hdr.protocol, IpProtocol::Other(50));
+        assert_eq!(hdr.payload_offset, 40, "must not skip past the ESP header");
+    }
+
+    #[test]
+    fn ipv6_ah_header_length_uses_4_byte_units() {
+        // AH with payload_len=4 -> (4+2)*4 = 24 bytes, followed by UDP.
+        let ah_len = 24usize;
+        let payload_len = (ah_len + 8) as u16; // AH + 8-byte UDP header
+        let mut pkt = vec![0u8; 40 + payload_len as usize];
+        pkt[0] = 0x60;
+        pkt[4] = (payload_len >> 8) as u8;
+        pkt[5] = (payload_len & 0xFF) as u8;
+        pkt[6] = 51; // AH
+        pkt[40] = 17; // next_header after AH = UDP
+        pkt[41] = 4; // AH payload_len (4-byte units minus 2)
+        let hdr = parse_ip_header(&pkt).expect("should parse");
+        assert_eq!(hdr.protocol, IpProtocol::Udp);
+        assert_eq!(hdr.payload_offset, 40 + ah_len);
     }
 
     #[test]

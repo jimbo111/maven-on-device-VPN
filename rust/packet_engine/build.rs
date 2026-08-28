@@ -2,7 +2,10 @@ fn main() {
     let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let output_dir = format!("{}/target", crate_dir);
 
-    let config = cbindgen::Config::from_file("cbindgen.toml").unwrap_or_default();
+    // A parse failure must be fatal: the silent default config emits a C++
+    // header, which breaks the Objective-C bridging header far from the cause.
+    let config = cbindgen::Config::from_file("cbindgen.toml")
+        .expect("failed to parse cbindgen.toml");
 
     cbindgen::Builder::new()
         .with_crate(&crate_dir)
