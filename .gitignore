@@ -28,3 +28,6 @@ dist/
 # Claude
 .claude/
 CLAUDE.md
+
+# Local task notes
+tasks/
