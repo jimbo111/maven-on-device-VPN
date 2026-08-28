@@ -18,6 +18,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     // -- Protected by `queue` --
     private var rustEngine: RustPacketEngine?
     private var dnsForwarder: DNSForwarder?
+    private var tcpDNSForwarder: TCPDNSForwarder?
     private var isProcessing = false
     private var isStopping = false
     private var lastNotificationTime: CFAbsoluteTime = 0 // (M2) protected by queue
@@ -69,8 +70,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 let dbExists = FileManager.default.fileExists(atPath: dbPath)
                 self.writeDebugStatus("db_exists=\(dbExists) at \(dbPath)")
 
-                // Initialize DNS forwarder
+                // Initialize DNS forwarders (UDP fast path + TCP fallback)
                 let forwarder = DNSForwarder(packetFlow: self.packetFlow, log: self.log)
+                let tcpForwarder = TCPDNSForwarder(packetFlow: self.packetFlow, log: self.log)
 
                 // Apply user settings from shared UserDefaults.
                 let filterNoise = AppGroupConfig.sharedDefaults.object(forKey: "filterNoise") as? Bool ?? true
@@ -79,6 +81,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.queue.sync {
                     self.rustEngine = engine
                     self.dnsForwarder = forwarder
+                    self.tcpDNSForwarder = tcpForwarder
                     self.isProcessing = true
                 }
 
@@ -106,15 +109,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         // Grab references then nil them out under the lock.
-        let (engine, forwarder) = queue.sync { () -> (RustPacketEngine?, DNSForwarder?) in
+        let (engine, forwarder, tcpForwarder) = queue.sync { () -> (RustPacketEngine?, DNSForwarder?, TCPDNSForwarder?) in
             let e = rustEngine
             let f = dnsForwarder
+            let t = tcpDNSForwarder
             dnsForwarder = nil
+            tcpDNSForwarder = nil
             rustEngine = nil
-            return (e, f)
+            return (e, f, t)
         }
 
         forwarder?.shutdown()
+        tcpForwarder?.shutdown()
         // Dispatch flush + shutdown through engineQueue so they cannot overlap
         // with any in-flight processPacket calls from DNS response callbacks.
         engineQueue.sync { engine?.flush() }
@@ -253,8 +259,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self = self else { return }
 
             // Snapshot state under the lock once per batch.
-            let (engine, forwarder, active) = self.queue.sync {
-                (self.rustEngine, self.dnsForwarder, self.isProcessing)
+            let (engine, forwarder, tcpForwarder, active) = self.queue.sync {
+                (self.rustEngine, self.dnsForwarder, self.tcpDNSForwarder, self.isProcessing)
             }
             guard active else { return }
 
@@ -280,17 +286,23 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                 }
 
-                // Forward DNS packets to the real DNS server.
+                // Route to the matching forwarder: TCP port 53 goes through the
+                // userspace TCP relay (DNS-over-TCP fallback after a truncated
+                // UDP response), everything else through the UDP fast path.
                 // The processResponse closure serializes the response-path engine
                 // call on the same engineQueue, preventing concurrent access.
-                forwarder?.forwardDNSPacket(outPacket, protocolFamily: protocols[i]) { responsePacket in
-                    guard let engine = engine else { return responsePacket }
-                    return engineQueue.sync {
-                        let result = engine.processPacket(responsePacket)
-                        if case .replace(let modified) = result {
-                            return modified
+                if outPacket.count > 9, outPacket[0] >> 4 == 4, outPacket[9] == 6 {
+                    tcpForwarder?.handlePacket(outPacket, protocolFamily: protocols[i])
+                } else {
+                    forwarder?.forwardDNSPacket(outPacket, protocolFamily: protocols[i]) { responsePacket in
+                        guard let engine = engine else { return responsePacket }
+                        return engineQueue.sync {
+                            let result = engine.processPacket(responsePacket)
+                            if case .replace(let modified) = result {
+                                return modified
+                            }
+                            return responsePacket
                         }
-                        return responsePacket
                     }
                 }
             }

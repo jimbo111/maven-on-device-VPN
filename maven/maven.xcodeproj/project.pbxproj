@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		C9MAVEN1000000000F31001 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9MAVEN0100000000F31001 /* PacketTunnelProvider.swift */; };
 		C9MAVEN1100000000F31001 /* RustBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9MAVEN0200000000F31001 /* RustBridge.swift */; };
+		C9MAVEN1500000000F31001 /* TCPDNSForwarder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9MAVEN0900000000F31001 /* TCPDNSForwarder.swift */; };
 		C9MAVEN1200000000F31001 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9MAVEN0700000000F31001 /* AppGroupConfig.swift */; };
 		C9MAVEN1300000000F31001 /* AppGroupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9MAVEN0700000000F31001 /* AppGroupConfig.swift */; };
 		C9MAVEN1400000000F31001 /* PacketTunnelExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C9MAVEN0800000000F31001 /* PacketTunnelExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -58,6 +59,7 @@
 		C9AE9B2D2F6C5AEA007F3100 /* mavenUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = mavenUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C9MAVEN0100000000F31001 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		C9MAVEN0200000000F31001 /* RustBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustBridge.swift; sourceTree = "<group>"; };
+		C9MAVEN0900000000F31001 /* TCPDNSForwarder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPDNSForwarder.swift; sourceTree = "<group>"; };
 		C9MAVEN0300000000F31001 /* PacketTunnelExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PacketTunnelExtension-Bridging-Header.h"; sourceTree = "<group>"; };
 		C9MAVEN0400000000F31001 /* packet_engine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = packet_engine.h; sourceTree = "<group>"; };
 		C9MAVEN0500000000F31001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -144,6 +146,7 @@
 			children = (
 				C9MAVEN0100000000F31001 /* PacketTunnelProvider.swift */,
 				C9MAVEN0200000000F31001 /* RustBridge.swift */,
+				C9MAVEN0900000000F31001 /* TCPDNSForwarder.swift */,
 				C9MAVEN0300000000F31001 /* PacketTunnelExtension-Bridging-Header.h */,
 				C9MAVEN2100000000F31001 /* Bridge */,
 				C9MAVEN0500000000F31001 /* Info.plist */,
@@ -389,6 +392,7 @@
 			files = (
 				C9MAVEN1000000000F31001 /* PacketTunnelProvider.swift in Sources */,
 				C9MAVEN1100000000F31001 /* RustBridge.swift in Sources */,
+				C9MAVEN1500000000F31001 /* TCPDNSForwarder.swift in Sources */,
 				C9MAVEN1200000000F31001 /* AppGroupConfig.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
