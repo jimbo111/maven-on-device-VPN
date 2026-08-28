@@ -52,6 +52,11 @@ final class VPNManager: ObservableObject {
     @Published var status: NEVPNStatus = .disconnected
     @Published var isLoading = false
 
+    /// The system-reported time the tunnel connected, if currently connected.
+    var connectedDate: Date? {
+        manager?.connection.connectedDate
+    }
+
     private var manager: NETunnelProviderManager?
     private var statusObserver: Any?
     private let log = OSLog(subsystem: "com.jimmykim.maven", category: "VPNManager")

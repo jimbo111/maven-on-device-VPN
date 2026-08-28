@@ -24,10 +24,9 @@ final class DarwinNotificationListener {
 
     private var handler: (() -> Void)?
 
-    /// Tracks whether a retained reference is currently held by the CF
-    /// notification center, so `stopListening` can release it exactly once
-    /// (C3 — prevents use-after-free from `passUnretained`).
-    private var isRetained = false
+    /// Tracks whether this listener is currently registered with the CF
+    /// notification center.
+    private var isRegistered = false
 
     // MARK: Init
 
@@ -49,23 +48,23 @@ final class DarwinNotificationListener {
     /// the named Darwin notification fires.
     ///
     /// Calling this method when already listening replaces the previous handler.
-    /// Uses `passRetained` so the CF notification center holds a strong reference
-    /// that keeps `self` alive until `stopListening()` releases it.
+    ///
+    /// The observer pointer is passed unretained: retaining `self` here would
+    /// keep the listener alive forever (deinit could never run, so the balancing
+    /// release in `stopListening` would be unreachable). Safety comes from
+    /// `deinit` calling `stopListening()`, which removes the observer before
+    /// the instance is deallocated.
     ///
     /// - Parameter handler: Closure called each time the notification fires.
     func startListening(handler: @escaping () -> Void) {
-        // Remove any previous registration and release the old retain before
-        // taking a fresh one.
-        if isRetained {
+        if isRegistered {
             stopListening()
         }
 
         self.handler = handler
 
-        // `passRetained` increments the Swift retain count, ensuring `self`
-        // cannot be deallocated while the CF center holds this pointer.
-        let rawSelf = Unmanaged.passRetained(self).toOpaque()
-        isRetained = true
+        let rawSelf = Unmanaged.passUnretained(self).toOpaque()
+        isRegistered = true
 
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterAddObserver(
@@ -73,8 +72,6 @@ final class DarwinNotificationListener {
             rawSelf,
             { _, observer, _, _, _ in
                 guard let observer else { return }
-                // `takeUnretainedValue` — we do NOT consume the retain here;
-                // the retain is balanced in `stopListening`.
                 let listener = Unmanaged<DarwinNotificationListener>
                     .fromOpaque(observer)
                     .takeUnretainedValue()
@@ -88,22 +85,15 @@ final class DarwinNotificationListener {
         )
     }
 
-    /// Deregisters the listener from the Darwin notification center and
-    /// releases the retained reference taken in `startListening`.
+    /// Deregisters the listener from the Darwin notification center.
     func stopListening() {
-        guard isRetained else { return }
+        guard isRegistered else { return }
 
-        // Reconstruct the same retained Unmanaged reference so we can both
-        // pass the correct observer pointer to CF *and* release our retain.
-        let unmanaged = Unmanaged.passUnretained(self)
-        let rawSelf = unmanaged.toOpaque()
-
+        let rawSelf = Unmanaged.passUnretained(self).toOpaque()
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterRemoveObserver(center, rawSelf, CFNotificationName(name as CFString), nil)
 
-        // Balance the `passRetained` from `startListening`.
-        Unmanaged<DarwinNotificationListener>.fromOpaque(rawSelf).release()
-        isRetained = false
+        isRegistered = false
         handler = nil
     }
 }

@@ -99,13 +99,23 @@ final class DatabaseReader {
     /// Safe to call while the Network Extension has the DB open — SQLite
     /// handles concurrent access via WAL. The extension's next write will
     /// simply create new rows.
-    func truncateAllData() {
+    ///
+    /// Returns `false` if either DELETE failed (e.g. the extension held the
+    /// write lock past the busy timeout) so callers can surface the failure.
+    @discardableResult
+    func truncateAllData() -> Bool {
         queue.sync {
             ensureOpen()
-            guard let db = db else { return }
-            sqlite3_exec(db, "DELETE FROM visits", nil, nil, nil)
-            sqlite3_exec(db, "DELETE FROM domains", nil, nil, nil)
+            guard let db = db else { return false }
+            let rc1 = sqlite3_exec(db, "DELETE FROM visits", nil, nil, nil)
+            let rc2 = sqlite3_exec(db, "DELETE FROM domains", nil, nil, nil)
+            if rc1 != SQLITE_OK || rc2 != SQLITE_OK {
+                let errMsg = String(cString: sqlite3_errmsg(db))
+                print("[Maven DB] Truncate FAILED: rc=\(rc1)/\(rc2) err=\(errMsg)")
+                return false
+            }
             print("[Maven DB] All data truncated")
+            return true
         }
     }
 
@@ -217,6 +227,24 @@ final class DatabaseReader {
         }
     }
 
+    /// All domains ordered alphabetically.
+    func domainsAlphabetical(limit: Int = 100) -> [DomainRecord] {
+        queue.sync {
+            ensureOpen()
+            guard let db = db else { return [] }
+
+            let sql = """
+                SELECT id, domain, first_seen, last_seen, visit_count, source, site_domain
+                FROM domains
+                ORDER BY domain ASC
+                LIMIT ?
+                """
+            return queryDomains(db: db, sql: sql, bind: { stmt in
+                sqlite3_bind_int(stmt, 1, Int32(limit))
+            })
+        }
+    }
+
     /// Aggregate statistics.
     func stats() -> DatabaseStats {
         queue.sync {
@@ -249,43 +277,28 @@ final class DatabaseReader {
             ensureOpen()
             guard let db = db else { return [] }
 
-            // Build the lower bound timestamp.
+            // Bucket by LOCAL calendar day. Dividing raw timestamps by
+            // ms-per-day would produce UTC days, which disagree with the
+            // local-midnight boundary used by stats().domainsToday and with
+            // the local weekday labels shown on the chart.
             let calendar = Calendar.current
-            guard let startDate = calendar.date(byAdding: .day, value: -(days - 1), to: calendar.startOfDay(for: Date())) else {
-                return []
-            }
-            let startMs = Int64(startDate.timeIntervalSince1970 * 1000)
+            let startOfToday = calendar.startOfDay(for: Date())
 
-            // Group visit timestamps into calendar days by dividing ms by ms-per-day.
-            let sql = """
-                SELECT (timestamp / 86400000) AS day_bucket,
-                       COUNT(DISTINCT domain_id) AS cnt
-                FROM visits
-                WHERE timestamp >= ?
-                GROUP BY day_bucket
-                ORDER BY day_bucket ASC
-                """
-
-            var results: [Int64: Int] = [:]
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-            defer { sqlite3_finalize(stmt) }
-
-            sqlite3_bind_int64(stmt, 1, startMs)
-
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let bucket = sqlite3_column_int64(stmt, 0)
-                let count = Int(sqlite3_column_int(stmt, 1))
-                results[bucket] = count
-            }
-
-            // Fill in zero-count days so the chart always has `days` entries.
             var output: [(date: Date, count: Int)] = []
-            for offset in 0..<days {
-                guard let dayDate = calendar.date(byAdding: .day, value: offset, to: startDate) else { continue }
-                let bucket = Int64(dayDate.timeIntervalSince1970 * 1000) / 86400000
-                let count = results[bucket] ?? 0
-                output.append((date: dayDate, count: count))
+            for offset in stride(from: -(days - 1), through: 0, by: 1) {
+                guard let dayStart = calendar.date(byAdding: .day, value: offset, to: startOfToday),
+                      let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { continue }
+                let lowerMs = Int64(dayStart.timeIntervalSince1970 * 1000)
+                let upperMs = Int64(dayEnd.timeIntervalSince1970 * 1000)
+                let count = scalarInt(
+                    db: db,
+                    sql: "SELECT COUNT(DISTINCT domain_id) FROM visits WHERE timestamp >= ? AND timestamp < ?",
+                    bind: { stmt in
+                        sqlite3_bind_int64(stmt, 1, lowerMs)
+                        sqlite3_bind_int64(stmt, 2, upperMs)
+                    }
+                )
+                output.append((date: dayStart, count: count))
             }
 
             return output

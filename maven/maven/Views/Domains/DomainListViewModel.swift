@@ -28,16 +28,20 @@ class DomainListViewModel: ObservableObject {
         name: AppGroupConfig.newDomainsNotification
     )
     private var lastFetchTime: CFAbsoluteTime = 0
+    private var refreshPending = false
     private static let fetchThrottleSeconds: CFAbsoluteTime = 1.0
 
     init() {
         fetchDomains()
 
-        // Re-filter when the user types or changes sort.
+        // Re-query the database when the user types or changes sort — the
+        // in-memory list only holds one page of rows, so filtering it locally
+        // would miss matches that exist in the database.
         Publishers.CombineLatest($searchText, $sortOption)
             .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+            .dropFirst()
             .sink { [weak self] _, _ in
-                self?.applyFilters()
+                self?.fetchDomains()
             }
             .store(in: &cancellables)
 
@@ -47,10 +51,28 @@ class DomainListViewModel: ObservableObject {
         // so the compiler can verify isolation.
         notificationListener.startListening { [weak self] in
             Task { @MainActor [weak self] in
+                self?.throttledFetch()
+            }
+        }
+    }
+
+    /// Trailing-edge throttle: a notification inside the window schedules one
+    /// deferred fetch instead of being dropped, so the tunnel's final flush
+    /// (e.g. on disconnect) is never lost.
+    private func throttledFetch() {
+        let now = CFAbsoluteTimeGetCurrent()
+        let elapsed = now - lastFetchTime
+        if elapsed >= Self.fetchThrottleSeconds {
+            lastFetchTime = now
+            fetchDomains()
+        } else if !refreshPending {
+            refreshPending = true
+            let delay = Self.fetchThrottleSeconds - elapsed
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard let self = self else { return }
-                let now = CFAbsoluteTimeGetCurrent()
-                guard now - self.lastFetchTime >= Self.fetchThrottleSeconds else { return }
-                self.lastFetchTime = now
+                self.refreshPending = false
+                self.lastFetchTime = CFAbsoluteTimeGetCurrent()
                 self.fetchDomains()
             }
         }
@@ -77,10 +99,16 @@ class DomainListViewModel: ObservableObject {
 
         Task {
             let domains = await Task.detached(priority: .userInitiated) {
-                if capturedSearch.isEmpty {
-                    return DatabaseReader.shared.recentDomains()
-                } else {
+                if !capturedSearch.isEmpty {
                     return DatabaseReader.shared.searchDomains(query: capturedSearch)
+                }
+                switch capturedSort {
+                case .recent:
+                    return DatabaseReader.shared.recentDomains()
+                case .visitCount:
+                    return DatabaseReader.shared.topDomains(limit: 100)
+                case .alphabetical:
+                    return DatabaseReader.shared.domainsAlphabetical(limit: 100)
                 }
             }.value
 

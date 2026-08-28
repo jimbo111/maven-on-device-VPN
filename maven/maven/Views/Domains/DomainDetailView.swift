@@ -42,7 +42,7 @@ struct DomainDetailView: View {
                 DetailRow(label: "Total Visits", value: "\(domain.visitCount)")
                 DetailRow(label: "First Seen", value: domain.firstSeenFormatted)
                 DetailRow(label: "Last Seen", value: domain.lastSeenFormatted)
-                DetailRow(label: "Detection Source", value: domain.source)
+                DetailRow(label: "Detection Source", value: domain.sourceLabel)
             }
 
             // Recent visits from database

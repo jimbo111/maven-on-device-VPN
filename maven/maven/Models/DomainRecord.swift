@@ -34,6 +34,17 @@ struct DomainRecord: Identifiable, Hashable, Sendable {
         Self.relativeDateFormatter.localizedString(for: lastSeenDate, relativeTo: Date())
     }
 
+    /// Human-readable label for the raw detection source stored by the engine
+    /// ("dns", "sni", "dns_correlation").
+    var sourceLabel: String {
+        switch source {
+        case "dns":             return "DNS"
+        case "sni":             return "SNI"
+        case "dns_correlation": return "DNS+IP"
+        default:                return source.uppercased()
+        }
+    }
+
     var firstSeenFormatted: String {
         Self.mediumDateFormatter.string(from: firstSeenDate)
     }

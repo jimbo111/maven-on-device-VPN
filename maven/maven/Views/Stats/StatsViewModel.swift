@@ -35,6 +35,7 @@ class StatsViewModel: ObservableObject {
         name: AppGroupConfig.newDomainsNotification
     )
     private var lastRefreshTime: CFAbsoluteTime = 0
+    private var refreshPending = false
     private static let refreshThrottleSeconds: CFAbsoluteTime = 3.0
 
     var formattedVisits: String {
@@ -52,15 +53,32 @@ class StatsViewModel: ObservableObject {
         // Refresh stats when the tunnel writes new rows, throttled to avoid
         // excessive DB queries during active browsing.
         notificationListener.startListening { [weak self] in
-            self?.throttledRefresh()
+            Task { @MainActor [weak self] in
+                self?.throttledRefresh()
+            }
         }
     }
 
+    /// Trailing-edge throttle: a notification inside the window schedules one
+    /// deferred refresh instead of being dropped, so the tunnel's final flush
+    /// (e.g. on disconnect) is never lost.
     private func throttledRefresh() {
         let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastRefreshTime >= Self.refreshThrottleSeconds else { return }
-        lastRefreshTime = now
-        refresh()
+        let elapsed = now - lastRefreshTime
+        if elapsed >= Self.refreshThrottleSeconds {
+            lastRefreshTime = now
+            refresh()
+        } else if !refreshPending {
+            refreshPending = true
+            let delay = Self.refreshThrottleSeconds - elapsed
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self = self else { return }
+                self.refreshPending = false
+                self.lastRefreshTime = CFAbsoluteTimeGetCurrent()
+                self.refresh()
+            }
+        }
     }
 
     func refresh() {

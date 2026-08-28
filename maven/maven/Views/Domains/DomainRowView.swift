@@ -38,12 +38,12 @@ struct DomainRowView: View {
     }
 
     private var sourceBadge: some View {
-        Text(domain.source)
+        Text(domain.sourceLabel)
             .font(.caption2.bold())
             .foregroundColor(.white)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(domain.source == "DNS" ? Color.green : Color.blue)
+            .background(domain.source == "dns" ? Color.green : Color.blue)
             .cornerRadius(4)
     }
 }

@@ -99,7 +99,13 @@ class ConnectionViewModel: ObservableObject {
 
     private func handleStatusChange(_ newStatus: NEVPNStatus) {
         if newStatus == .connected {
-            sessionStart = Date()
+            // Duplicate .connected emissions (replayed initial value, repeated
+            // NEVPNStatusDidChange posts) must not reset the session clock.
+            // Prefer the system's connectedDate so a relaunched app shows the
+            // real session duration, not time-since-app-open.
+            if sessionStart == nil {
+                sessionStart = VPNManager.shared.connectedDate ?? Date()
+            }
             startTimer()
         } else {
             stopTimer()

@@ -28,7 +28,10 @@ class SettingsViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             let domains = DatabaseReader.shared.recentDomains(limit: 10000)
             guard !domains.isEmpty else {
-                await MainActor.run { self?.isExporting = false }
+                await MainActor.run {
+                    self?.exportError = "No domains to export yet."
+                    self?.isExporting = false
+                }
                 return
             }
 
@@ -78,19 +81,28 @@ class SettingsViewModel: ObservableObject {
     }
 
     func clearAllData() {
+        showClearConfirmation = false
+
         // Truncate tables via SQL instead of deleting the file.
         // The Rust engine in the extension may have the DB open; deleting
-        // the file would leave it writing to a ghost inode.
-        DatabaseReader.shared.truncateAllData()
+        // the file would leave it writing to a ghost inode. Run off the main
+        // thread — the DELETEs can block on the extension's write lock.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let ok = DatabaseReader.shared.truncateAllData()
 
-        // Post the same Darwin notification the extension uses so that all
-        // views (DomainListView, StatsView) re-query and show empty state.
-        let name = CFNotificationName(AppGroupConfig.newDomainsNotification as CFString)
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            name, nil, nil, true
-        )
+            // Post the same Darwin notification the extension uses so that all
+            // views (DomainListView, StatsView) re-query and show empty state.
+            let name = CFNotificationName(AppGroupConfig.newDomainsNotification as CFString)
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                name, nil, nil, true
+            )
 
-        showClearConfirmation = false
+            if !ok {
+                await MainActor.run {
+                    self?.exportError = "Could not clear data — the tunnel is busy writing. Try again."
+                }
+            }
+        }
     }
 }
