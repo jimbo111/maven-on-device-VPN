@@ -140,6 +140,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         case 0x02:
             let engine = queue.sync { rustEngine }
             if let engine = engine {
+                // The app polls stats every few seconds while foregrounded.
+                // Flush here too, so domains pending in the engine's batch
+                // buffer reach SQLite even when traffic has gone quiet
+                // (maybe_flush only runs while packets are arriving).
+                engineQueue.sync { engine.flush() }
+                notifyAppOfNewDomains()
                 let stats = engineQueue.sync { engine.getStats() }
                 writeDebugStatus("ipc_stats: pkts=\(stats.packetsProcessed) dns=\(stats.dnsDomainsFound)")
                 var response = Data(capacity: 24)
@@ -166,10 +172,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Creates IPv4-only tunnel settings. (C1) IPv6 removed entirely to avoid
     /// the need for a proper UDP checksum in IPv6 response packets.
     private func createTunnelSettings() -> NEPacketTunnelNetworkSettings {
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "192.168.1.1")
+        // CGNAT-range addresses (RFC 6598) with a host mask: never collide with
+        // home/office LANs (192.168.x.x would), and the /32 mask keeps the
+        // interface from claiming an entire subnet as a connected route.
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "100.64.0.1")
 
         // IPv4: route ONLY DNS server traffic through tunnel.
-        let ipv4 = NEIPv4Settings(addresses: ["192.168.1.2"], subnetMasks: ["255.255.255.0"])
+        let ipv4 = NEIPv4Settings(addresses: ["100.64.0.2"], subnetMasks: ["255.255.255.255"])
         let dns1Route = NEIPv4Route(destinationAddress: "8.8.8.8", subnetMask: "255.255.255.255")
         let dns2Route = NEIPv4Route(destinationAddress: "8.8.4.4", subnetMask: "255.255.255.255")
         ipv4.includedRoutes = [dns1Route, dns2Route]
@@ -327,10 +336,15 @@ class DNSForwarder {
     private var isShutdown = false
 
     /// A DNS query waiting for its response.
+    ///
+    /// Keyed in `pendingQueries` by the *upstream* transaction ID, which may
+    /// have been rewritten to avoid collisions between concurrent clients.
+    /// `originalTxnID` is restored into the response before writing it back.
     private struct PendingQuery {
         let originalPacket: Data
         let ipHeaderLen: Int
         let srcPort: UInt16
+        let originalTxnID: UInt16
         let protocolFamily: NSNumber
         let processResponse: (Data) -> Data
         let deadline: DispatchWorkItem
@@ -492,10 +506,18 @@ class DNSForwarder {
             return
         }
 
-        // Transaction ID collision — drop the new query; DNS client will retry.
-        guard pendingQueries[txnID] == nil else {
-            os_log("DNS txn ID collision (0x%04x), dropping", log: log, type: .error, txnID)
-            return
+        // All queries share one upstream socket and responses only carry the
+        // 16-bit transaction ID, so concurrent clients that pick the same ID
+        // would be indistinguishable. Rewrite to a free upstream ID and restore
+        // the original in the response.
+        var upstreamID = txnID
+        while pendingQueries[upstreamID] != nil {
+            upstreamID &+= 1
+        }
+        var outgoingPayload = dnsPayload
+        if upstreamID != txnID {
+            outgoingPayload[outgoingPayload.startIndex] = UInt8(upstreamID >> 8)
+            outgoingPayload[outgoingPayload.startIndex + 1] = UInt8(upstreamID & 0xFF)
         }
 
         let conn = ensureConnection()
@@ -503,27 +525,27 @@ class DNSForwarder {
         // Per-query timeout.
         let timeoutWork = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            if let pending = self.pendingQueries.removeValue(forKey: txnID) {
-                pending.deadline.cancel()
+            if self.pendingQueries.removeValue(forKey: upstreamID) != nil {
                 os_log("DNS query timed out for txn 0x%04x", log: self.log, type: .error, txnID)
             }
         }
         queue.asyncAfter(deadline: .now() + Self.queryTimeoutSeconds, execute: timeoutWork)
 
-        pendingQueries[txnID] = PendingQuery(
+        pendingQueries[upstreamID] = PendingQuery(
             originalPacket: packet,
             ipHeaderLen: ipHeaderLen,
             srcPort: srcPort,
+            originalTxnID: txnID,
             protocolFamily: protocolFamily,
             processResponse: processResponse,
             deadline: timeoutWork
         )
 
-        conn.send(content: dnsPayload, completion: .contentProcessed { [weak self] error in
+        conn.send(content: outgoingPayload, completion: .contentProcessed { [weak self] error in
             guard let self = self, let error = error else { return }
             os_log("DNS send error for txn 0x%04x: %{public}@", log: self.log, type: .error, txnID, error.localizedDescription)
             self.queue.async {
-                if let pending = self.pendingQueries.removeValue(forKey: txnID) {
+                if let pending = self.pendingQueries.removeValue(forKey: upstreamID) {
                     pending.deadline.cancel()
                 }
             }
@@ -538,10 +560,23 @@ class DNSForwarder {
         }
         pending.deadline.cancel()
 
+        // The response must fit in a single IPv4 packet (total length is 16-bit).
+        guard data.count <= 65_535 - pending.ipHeaderLen - 8 else {
+            os_log("DNS response too large (%d bytes), dropping", log: log, type: .error, data.count)
+            return
+        }
+
+        // Restore the client's original transaction ID if it was rewritten.
+        var dnsResponse = data
+        if pending.originalTxnID != txnID {
+            dnsResponse[dnsResponse.startIndex] = UInt8(pending.originalTxnID >> 8)
+            dnsResponse[dnsResponse.startIndex + 1] = UInt8(pending.originalTxnID & 0xFF)
+        }
+
         var responsePacket = buildIPv4UDPResponse(
             origPacket: pending.originalPacket,
             ipHeaderLen: pending.ipHeaderLen,
-            dnsResponse: data,
+            dnsResponse: dnsResponse,
             srcPort: pending.srcPort
         )
 
@@ -549,14 +584,6 @@ class DNSForwarder {
         responsePacket = pending.processResponse(responsePacket)
 
         packetFlow.writePackets([responsePacket], withProtocols: [pending.protocolFamily])
-    }
-
-    /// Handles a per-query timeout. Runs on `queue`.
-    private func handleTimeout(txnID: UInt16) {
-        if let pending = pendingQueries.removeValue(forKey: txnID) {
-            pending.deadline.cancel()
-            os_log("DNS query timed out for txn 0x%04x", log: log, type: .error, txnID)
-        }
     }
 
     // MARK: - Packet Construction
