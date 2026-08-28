@@ -9,6 +9,10 @@ BRIDGE_DIR="$PROJECT_ROOT/maven/PacketTunnelExtension/Bridge"
 
 echo "Building Rust packet_engine for device and simulator..."
 
+# Pin the target dir so a global CARGO_TARGET_DIR doesn't move the artifacts
+# away from the paths we copy from (build.rs also writes the header there).
+export CARGO_TARGET_DIR="$RUST_DIR/target"
+
 cd "$RUST_DIR"
 cargo build --target aarch64-apple-ios --release
 cargo build --target aarch64-apple-ios-sim --release

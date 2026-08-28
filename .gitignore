@@ -10,7 +10,7 @@ maven/Frameworks/ios-arm64-simulator/
 maven/PacketTunnelExtension/Bridge/packet_engine.h
 
 # Xcode
-*.xcuserdata
+xcuserdata/
 DerivedData/
 *.xcuserstate
 
